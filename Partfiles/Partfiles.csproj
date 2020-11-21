@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>SuRGeoNix.Partfiles</RootNamespace>
+    <Company>SuRGeoNix</Company>
+    <Authors>SuRGeoNix</Authors>
+    <PackageId>APF (Advanced Part Files)</PackageId>
+    <Product>APF (Advanced Part Files)</Product>
+    <Description>Advanced Partfiles with thread-safe read/write support for preview/streaming before completed</Description>
+    <Copyright>© SuRGeoNix 2020</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/SuRGeoNix/Partfiles</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SuRGeoNix/Partfiles</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>partfile part file incomplete preview apf</PackageTags>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+</Project>
