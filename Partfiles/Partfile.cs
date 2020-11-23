@@ -102,12 +102,21 @@ namespace SuRGeoNix.Partfiles
 
             MapChunkIdToChunkPos = new Dictionary<int, int>();
         }
+
         /// <summary>
         /// Loads an existing partfile
         /// </summary>
         /// <param name="partfile">Absolute path of the existing part file</param>
         /// <param name="options">Warning: main options will be used from the saved part file</param>
-        public Partfile(string partfile, Options options = null)
+        public Partfile(string partfile, Options options = null) : this(partfile, false, options) { }
+
+        /// <summary>
+        /// Loads an existing partfile
+        /// </summary>
+        /// <param name="partfile">Absolute path of the existing part file</param>
+        /// <param name="forceOptionsFolder">Changes the previously defined folder with the new one from Options.Folder</param>
+        /// <param name="options">Warning: main options will be used from the saved part file</param>
+        public Partfile(string partfile, bool forceOptionsFolder, Options options = null)
         {
             if (!File.Exists(partfile)) throw new Exception($"Partfile '{partfile}' does not exist");
 
@@ -167,7 +176,7 @@ namespace SuRGeoNix.Partfiles
 
             readBuff = new byte[folderLen];
             fileStream.Read(readBuff, 0, folderLen);
-            Options.Folder = Encoding.UTF8.GetString(readBuff);
+            if (!forceOptionsFolder) Options.Folder = Encoding.UTF8.GetString(readBuff);
 
             readBuff = new byte[4];
             fileStream.Read(readBuff, 0, 4);
@@ -180,8 +189,19 @@ namespace SuRGeoNix.Partfiles
             headersSize = (int) fileStream.Position;
             Options.PartExtension = (new FileInfo(partfile)).Extension;
 
+            // Validation Overwrite
+            if (File.Exists(Path.Combine(Options.Folder, Filename)))
+            {
+                if (!Options.Overwrite) { fileStream.Close(); ThrowException($"Exists already in {Options.Folder}"); }
+                File.Delete(Path.Combine(Options.Folder, Filename));
+            }
+
+            // Create Folder
+            Directory.CreateDirectory((new FileInfo(Path.Combine(Options.Folder, Filename))).DirectoryName);
+
             CalculatePartsize();
 
+            // Load Map from file (TODO: check last block for possible corruption and delete it if thats the case)
             MapChunkIdToChunkPos = new Dictionary<int, int>();
 
             int curChunkSize;
