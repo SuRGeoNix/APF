@@ -4,13 +4,22 @@ using System.IO;
 using System.Reflection;
 using System.Text;
 
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
 namespace SuRGeoNix.Partfiles
 {
     /// <summary>
     /// Advanced Partfiles (thread-safe read/write)
     /// </summary>
-    public class Partfile : IDisposable
+    public class Partfile : Stream
     {
+        FileStream      fileStream;
+
+        readonly object lockRW      = new object();
+        readonly object lockCreate  = new object();
+        int             curChunkPos = -1;
+        int             headersSize = -1;
+
+
         public static Version Version   { get; private set; } = Assembly.GetExecutingAssembly().GetName().Version;
 
         public string   Filename        { get; private set; } = null;
@@ -25,7 +34,7 @@ namespace SuRGeoNix.Partfiles
         public int      ChunksTotal     { get; private set; } = -1;
         public int      FirstChunkpos   { get; private set; } = -1;
         public int      LastChunkpos    { get; private set; } = -1;
-        
+
         public Dictionary<int, int> MapChunkIdToChunkPos { get; private set; }
 
         public event FileCreatingHandler FileCreating;
@@ -276,7 +285,7 @@ namespace SuRGeoNix.Partfiles
             }
         }
         /// <summary>
-        /// Writes the last chunk of the completed file (<=chunksize)
+        /// Writes the last chunk of the completed file (&lt;=chunksize)
         /// </summary>
         /// <param name="chunkId">The zero-based chunk id of the completed file</param>
         /// <param name="chunk">Chunk data</param>
@@ -476,9 +485,11 @@ namespace SuRGeoNix.Partfiles
         /// <summary>
         /// Closes the file input and deletes part and/or completed files if specified by the options
         /// </summary>
-        public void Dispose()
+        protected override void Dispose(bool disposing = true)
         {
             if (Disposed) return;
+
+            base.Dispose(disposing);
 
             if (fileStream != null)
             {
@@ -589,11 +600,55 @@ namespace SuRGeoNix.Partfiles
             headersSize = (int) fileStream.Position;
         }
 
-        FileStream      fileStream;
+        #region Preparing Stream Support
+        public override bool CanRead    => true;
+        public override bool CanSeek    => true;
+        public override bool CanWrite   => false;
+        public override long Length     => Size;
+        public override long Position   { get; set; }
 
-        readonly object lockRW      = new object();
-        readonly object lockCreate  = new object();
-        int             curChunkPos = -1;
-        int             headersSize = -1;
+        public event BeforeReadingHandler BeforeReading;
+        public delegate void BeforeReadingHandler(Partfile partfile, BeforeReadingEventArgs e);
+        public class BeforeReadingEventArgs
+        {
+            public long Position        { get; set; }
+            public int  Count           { get; set; }
+
+            public BeforeReadingEventArgs(long position, int count) { Position = position; Count = count; }
+        }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (Position + count > Size) count = (int) (Size - Position);
+            BeforeReading?.Invoke(this, new BeforeReadingEventArgs(Position, count));
+
+            byte[] readData = Read(Position, count);
+            Buffer.BlockCopy(readData, 0, buffer, offset, readData.Length);
+            Position += readData.Length;
+            return readData.Length;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            switch (origin) {
+                case SeekOrigin.Begin:
+                    Position = offset;
+                    break;
+                case SeekOrigin.Current:
+                    Position += offset;
+                    break;
+                case SeekOrigin.End:
+                    Position = Length - offset;
+                    break;
+                default:
+                    throw new NotSupportedException ();
+            }
+
+            return Position;
+        }
+        public override void SetLength(long value) { throw new NotImplementedException(); }
+        public override void Write(byte[] buffer, int offset, int count) { throw new NotImplementedException(); }
+        public override void Flush() { throw new NotImplementedException(); }
+        #endregion
     }
 }
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member

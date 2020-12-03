@@ -15,7 +15,9 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>apf advanced partfile partfiles part file incomplete preview streaming</PackageTags>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReleaseNotes>- Preparing Stream Support
+- Preparing Documentation</PackageReleaseNotes>
   </PropertyGroup>
-
 </Project>
