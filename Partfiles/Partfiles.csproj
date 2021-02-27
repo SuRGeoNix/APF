@@ -8,16 +8,18 @@
     <PackageId>APF</PackageId>
     <Product>Advanced Part Files (APF)</Product>
     <Description>Advanced Part Files (APF): Thread-safe read/write partfiles with quick restore support (for preview/streaming purposes)</Description>
-    <Copyright>© SuRGeoNix 2020</Copyright>
+    <Copyright>© SuRGeoNix 2021</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/SuRGeoNix/APF</PackageProjectUrl>
     <RepositoryUrl>https://github.com/SuRGeoNix/APF</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>apf advanced partfile partfiles part file incomplete preview streaming</PackageTags>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>1.1.1</Version>
+    <Version>1.2</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <PackageReleaseNotes>- Preparing Stream Support
-- Preparing Documentation</PackageReleaseNotes>
+    <PackageReleaseNotes>- Seperating Read/Write Streams
+- Using more efficient Read algorithm</PackageReleaseNotes>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
   </PropertyGroup>
 </Project>

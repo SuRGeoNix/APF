@@ -12,13 +12,11 @@ namespace SuRGeoNix.Partfiles
     /// </summary>
     public class Partfile : Stream
     {
-        FileStream      fileStream;
-
-        readonly object lockRW      = new object();
+        FileStream      writeStream;
+        FileStream      readStream;
         readonly object lockCreate  = new object();
         int             curChunkPos = -1;
         int             headersSize = -1;
-
 
         public static Version Version   { get; private set; } = Assembly.GetExecutingAssembly().GetName().Version;
 
@@ -104,7 +102,8 @@ namespace SuRGeoNix.Partfiles
             // Create & Open Partfile | Write headers
             try
             {
-                fileStream = File.Open(Path.Combine(Options.PartFolder, Filename) + Options.PartExtension, FileMode.CreateNew, FileAccess.ReadWrite);
+                writeStream = File.Open(Path.Combine(Options.PartFolder, Filename) + Options.PartExtension, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+                readStream  = File.Open(Path.Combine(Options.PartFolder, Filename) + Options.PartExtension, FileMode.Open, FileAccess.Read, FileShare.Write);
                 WriteHeaders();
                 CalculatePartsize();
             } catch (Exception e) { ThrowException(e.Message); }
@@ -131,77 +130,77 @@ namespace SuRGeoNix.Partfiles
 
             Options = options == null ? new Options() : (Options) options.Clone();
 
-            fileStream = File.Open(partfile, FileMode.Open, FileAccess.ReadWrite);
+            readStream = File.Open(partfile, FileMode.Open, FileAccess.Read, FileShare.Write);
 
             // Type
             byte[] readBuff = new byte[3];
-            fileStream.Read(readBuff, 0, 3);
+            readStream.Read(readBuff, 0, 3);
 
             if (Encoding.UTF8.GetString(readBuff) != "APF") throw new IOException($"Invalid headers in partfile");
 
             // Major
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
 
             // Minor
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
 
             readBuff = new byte[8];
-            fileStream.Read(readBuff, 0, 8);
+            readStream.Read(readBuff, 0, 8);
             Size = BitConverter.ToInt64(readBuff, 0);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             FirstChunkpos = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             Options.FirstChunksize = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             LastChunkpos = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             Options.LastChunksize = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             Chunksize = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             int filenameLen = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[filenameLen];
-            fileStream.Read(readBuff, 0, filenameLen);
+            readStream.Read(readBuff, 0, filenameLen);
             Filename = Encoding.UTF8.GetString(readBuff);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             int folderLen = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[folderLen];
-            fileStream.Read(readBuff, 0, folderLen);
+            readStream.Read(readBuff, 0, folderLen);
             if (!forceOptionsFolder) Options.Folder = Encoding.UTF8.GetString(readBuff);
 
             readBuff = new byte[4];
-            fileStream.Read(readBuff, 0, 4);
+            readStream.Read(readBuff, 0, 4);
             int partFolderLen = BitConverter.ToInt32(readBuff, 0);
 
             readBuff = new byte[partFolderLen];
-            fileStream.Read(readBuff, 0, partFolderLen);
+            readStream.Read(readBuff, 0, partFolderLen);
             Options.PartFolder = Encoding.UTF8.GetString(readBuff);
 
-            headersSize = (int) fileStream.Position;
+            headersSize = (int) readStream.Position;
             Options.PartExtension = (new FileInfo(partfile)).Extension;
 
             // Validation Overwrite
             if (File.Exists(Path.Combine(Options.Folder, Filename)))
             {
-                if (!Options.Overwrite) { fileStream.Close(); ThrowException($"Exists already in {Options.Folder}"); }
+                if (!Options.Overwrite) { readStream.Close(); readStream = null; ThrowException($"Exists already in {Options.Folder}"); }
                 File.Delete(Path.Combine(Options.Folder, Filename));
             }
 
@@ -227,16 +226,22 @@ namespace SuRGeoNix.Partfiles
                 else
                     curChunkSize = Chunksize;
 
-                if (fileStream.Position + 4 + curChunkSize > fileStream.Length) { curChunkPos--; break; }
+                if (readStream.Position + 4 + curChunkSize > readStream.Length) { curChunkPos--; break; }
 
-                fileStream.Read(readBuff, 0, 4);
+                readStream.Read(readBuff, 0, 4);
                 int chunkId = BitConverter.ToInt32(readBuff, 0);
                 MapChunkIdToChunkPos.Add(chunkId, curChunkPos);
 
-                fileStream.Position += curChunkSize;
+                readStream.Position += curChunkSize;
             } while (true);
 
-            if (Options.AutoCreate && fileStream.Length == Partsize) Create();
+            if (Options.AutoCreate && readStream.Length == Partsize)
+                Create();
+            else
+            {
+                writeStream = File.Open(partfile, FileMode.Open, FileAccess.Write, FileShare.Read);
+                writeStream.Position = writeStream.Length;
+            }
         }
 
         /// <summary>
@@ -247,12 +252,9 @@ namespace SuRGeoNix.Partfiles
         /// <param name="offset">The zero-based offset</param>
         public void Write(int chunkId, byte[] chunk, int offset = 0)
         {
-            lock (lockRW)
-            {
-                if (!ValidateWrite(chunkId)) return;
-                WriteChunk(chunkId, chunk, offset, Chunksize);
-                if (Options.AutoCreate && fileStream.Length == Partsize) Create();
-            }
+            if (!ValidateWrite(chunkId)) return;
+            WriteChunk(chunkId, chunk, offset, Chunksize);
+            if (Options.AutoCreate && writeStream.Length == Partsize) Create();
         }
         /// <summary>
         /// Writes the first chunk (0) of the completed file
@@ -262,27 +264,24 @@ namespace SuRGeoNix.Partfiles
         /// <param name="len">Length</param>
         public void WriteFirst(byte[] chunk, int offset = 0, int len = -1)
         {
-            lock (lockRW)
-            {
-                if (len == -1) len = chunk.Length;
+            if (len == -1) len = chunk.Length;
 
-                if (!ValidateWrite(0)) return;
+            if (!ValidateWrite(0)) return;
 
-                // Save firstPos / firstChunkSize
-                long savePos = fileStream.Position;
-                fileStream.Seek(3 + 8 + 8,  SeekOrigin.Begin);
-                fileStream.Write(BitConverter.GetBytes(curChunkPos + 1),0, sizeof(int));
-                fileStream.Write(BitConverter.GetBytes(len),            0, sizeof(int));
-                fileStream.Seek(savePos,SeekOrigin.Begin);
+            // Save firstPos / firstChunkSize
+            long savePos = writeStream.Position;
+            writeStream.Seek(3 + 8 + 8,  SeekOrigin.Begin);
+            writeStream.Write(BitConverter.GetBytes(curChunkPos + 1),0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(len),            0, sizeof(int));
+            writeStream.Seek(savePos,SeekOrigin.Begin);
 
-                WriteChunk(0, chunk, offset, len);
+            WriteChunk(0, chunk, offset, len);
 
-                FirstChunkpos           = curChunkPos;
-                Options.FirstChunksize  = len;
-                CalculatePartsize();
+            FirstChunkpos           = curChunkPos;
+            Options.FirstChunksize  = len;
+            CalculatePartsize();
 
-                if (Options.AutoCreate && fileStream.Length == Partsize) Create();
-            }
+            if (Options.AutoCreate && writeStream.Length == Partsize) Create();
         }
         /// <summary>
         /// Writes the last chunk of the completed file (&lt;=chunksize)
@@ -293,152 +292,53 @@ namespace SuRGeoNix.Partfiles
         /// <param name="len">Length</param>
         public void WriteLast(int chunkId, byte[] chunk, int offset = 0, int len = -1)
         {
-            lock (lockRW)
-            {
-                if (chunkId == 0) { WriteFirst(chunk, offset, len); return; }
+            if (chunkId == 0) { WriteFirst(chunk, offset, len); return; }
 
-                if (len == -1) len = chunk.Length;
-                if (!ValidateWrite(chunkId)) return;
+            if (len == -1) len = chunk.Length;
+            if (!ValidateWrite(chunkId)) return;
 
-                // Save lastPos / lastChunkSize
-                long savePos = fileStream.Position;
-                fileStream.Seek(3 + 8 + 8 + 4 + 4,  SeekOrigin.Begin);
-                fileStream.Write(BitConverter.GetBytes(curChunkPos + 1),0, sizeof(int));
-                fileStream.Write(BitConverter.GetBytes(len),            0, sizeof(int));
-                fileStream.Seek(savePos,        SeekOrigin.Begin);
+            // Save lastPos / lastChunkSize
+            long savePos = writeStream.Position;
+            writeStream.Seek(3 + 8 + 8 + 4 + 4,  SeekOrigin.Begin);
+            writeStream.Write(BitConverter.GetBytes(curChunkPos + 1),0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(len),            0, sizeof(int));
+            writeStream.Seek(savePos,        SeekOrigin.Begin);
 
-                WriteChunk(chunkId, chunk, offset, len);
+            WriteChunk(chunkId, chunk, offset, len);
 
-                LastChunkpos            = curChunkPos;
-                Options.LastChunksize   = len;
-                CalculatePartsize();
+            LastChunkpos            = curChunkPos;
+            Options.LastChunksize   = len;
+            CalculatePartsize();
 
-                if (Options.AutoCreate && fileStream.Length == Partsize) Create();
-            }
+            if (Options.AutoCreate && writeStream.Length == Partsize) Create();
         }
 
+
         /// <summary>
-        /// Reads the specified byte range from the part file
-        /// </summary>
-        /// <param name="pos">The zero-based position to start reading</param>
-        /// <param name="len">The length of the bytes to retrieve</param>
-        /// <returns>Byte data</returns>
-        /// <exception cref="Exception">Thrown when the first chunk size is not known yet</exception>
-        public byte[] Read(long pos, long len)
-        {
-            lock (lockCreate)
-            {
-                byte[] readData = null;
-
-                if (Created)
-                {
-                    readData = new byte[len];
-                    fileStream.Seek(pos, SeekOrigin.Begin);
-                    fileStream.Read(readData, 0, (int)len);
-                    return readData;
-                }
-                
-                // We could possible allow reading by guessing or considering FirstChunkSize = 0 (if we dont care about exact position)
-                //if (Options.FirstChunksize == -1) { Warnings?.Invoke(this, new WarningEventArgs("Cannot read data until first chunk size will be known")); return null; }
-                if (Options.FirstChunksize == -1) ThrowException($"First chunk size is not known yet");
-
-                long readsize;
-                long startByte;
-                byte[] curChunk;
-                long sizeLeft = len;
-
-                int chunkId     = (int)((pos  - Options.FirstChunksize)     / Chunksize) + 1;
-                int lastChunkId = (int)((Size - Options.FirstChunksize - 1) / Chunksize) + 1;
-                
-                if (pos < Options.FirstChunksize)
-                {
-                    chunkId     = 0;
-                    startByte   = pos;
-                    readsize    = Math.Min(sizeLeft, Options.FirstChunksize - startByte);
-                }
-                else if (chunkId == lastChunkId && LastChunkpos != -1)
-                {
-                    startByte   = ((pos - Options.FirstChunksize) % Chunksize);
-                    readsize    = Math.Min(sizeLeft, Options.LastChunksize - startByte);
-                }
-                else
-                {
-                    startByte   = ((pos - Options.FirstChunksize) % Chunksize);
-                    readsize    = Math.Min(sizeLeft, Chunksize - startByte);
-                }
-
-                using (MemoryStream ms = new MemoryStream())
-                {
-                    curChunk = ReadChunk(chunkId);
-                    ms.Write(curChunk, (int)startByte, (int)readsize); //  Utils.ArraySub(ref curChunk, (uint)startByte, (uint)readsize);
-                    sizeLeft -= readsize;
-
-                    while (sizeLeft > 0)
-                    {
-                        chunkId++;
-
-                        curChunk = ReadChunk(chunkId);
-                        if (chunkId == lastChunkId && LastChunkpos != -1)
-                            readsize = (uint)Math.Min(sizeLeft, Options.LastChunksize);
-                        else
-                            readsize = (uint)Math.Min(sizeLeft, Chunksize);
-
-                        ms.Write(curChunk, 0, (int)readsize); //readData = Utils.ArrayMerge(readData, Utils.ArraySub(ref curChunk, 0, (uint)readsize));
-                        sizeLeft -= readsize;
-                    }
-
-                    readData = ms.ToArray();
-                }
-
-                return readData;
-            }
-        }
-        /// <summary>
-        /// Reads the specified chunk id from the part file
+        /// Reads the specified chunkId bytes from the part file
         /// </summary>
         /// <param name="chunkId">The chunk id of the completed file</param>
-        /// <returns>Byte data</returns>
-        /// <exception cref="Exception">Thrown when the specified chunk id is not available</exception>
-        public byte[] ReadChunk(int chunkId)
+        /// <param name="startByte">From which byte of the chunk will start the read</param>
+        /// <param name="buffer">The output buffer</param>
+        /// <param name="offset">The offset to start on the output buffer</param>
+        /// <param name="count">How many bytes to read (Should ensure &lt;= ChunkSize or First/Last ChunkSize)</param>
+        /// <returns></returns>
+        public int ReadChunk(int chunkId, int startByte, byte[] buffer, int offset, int count)
         {
-            lock (lockRW)
-            {
-                if (!MapChunkIdToChunkPos.ContainsKey(chunkId)) ThrowException($"Chunk id {chunkId} not available yet");
+            if (!MapChunkIdToChunkPos.ContainsKey(chunkId)) ThrowException($"Chunk id {chunkId} not available yet");
 
-                int chunkPos   = MapChunkIdToChunkPos[chunkId];
-                int chunksLeft = chunkPos;
+            int chunkPos   = MapChunkIdToChunkPos[chunkId];
+            int chunksLeft = chunkPos;
 
-                // Find chunk's size
-                int chunksize = Chunksize;
-                if (chunkPos == FirstChunkpos)
-                    chunksize = Options.FirstChunksize;
-                else if (chunkPos == LastChunkpos)
-                    chunksize = Options.LastChunksize;
+            // Find chunk's position in file
+            long filePos = headersSize + 4;
+            if (FirstChunkpos != -1 && chunkPos > FirstChunkpos) { filePos += 4 + Options.FirstChunksize; chunksLeft--; }
+            if (LastChunkpos  != -1 && chunkPos > LastChunkpos ) { filePos += 4 + Options.LastChunksize;  chunksLeft--; }
+            filePos += (long)chunksLeft * (Chunksize + 4);
 
-                // Find chunk's position in file
-                long filePos    = headersSize + 4;
-                if (FirstChunkpos != -1 && chunkPos > FirstChunkpos) { filePos += 4 + Options.FirstChunksize; chunksLeft--; }
-                if (LastChunkpos  != -1 && chunkPos > LastChunkpos ) { filePos += 4 + Options.LastChunksize;  chunksLeft--; }
-                filePos += (long)chunksLeft * (Chunksize + 4);
-
-                // Read at filePos len of chunksize
-                if (filePos < fileStream.Length)
-                {
-                    byte[] data = new byte[chunksize];
-                    long savePos = fileStream.Position;
-                    try
-                    {
-                        fileStream.Seek(filePos, SeekOrigin.Begin);
-                        fileStream.Read(data, 0, chunksize);
-                        fileStream.Seek(savePos, SeekOrigin.Begin);
-                        return data;
-                    }
-                    catch (Exception e) { fileStream.Seek(savePos, SeekOrigin.Begin); throw e; }
-                }
-            }
-
-            // pos >= fileStream.Length
-            throw new Exception("Data not available");
+            // Read at filePos len of chunksize
+            readStream.Seek(filePos + startByte, SeekOrigin.Begin);
+            return readStream.Read(buffer, offset, count);
         }
 
         /// <summary>
@@ -449,36 +349,51 @@ namespace SuRGeoNix.Partfiles
         {
             lock (lockCreate)
             {
-                lock (lockRW)
-                {
-                    if (Created) return;
+                if (Created) return;
 
-                    FileCreating?.Invoke(this, EventArgs.Empty);
-                    using (FileStream fs = File.Open(Path.Combine(Options.Folder, Filename), FileMode.CreateNew))
+                FileCreating?.Invoke(this, EventArgs.Empty);
+                using (FileStream fs = File.Open(Path.Combine(Options.Folder, Filename), FileMode.CreateNew))
+                {
+                    if (Size > 0)
                     {
-                        if (Size > 0)
+                        byte[] buffer = new byte[Options.FirstChunksize];
+                        ReadChunk(0, 0, buffer, 0, Options.FirstChunksize);
+                        fs.Write(buffer, 0, buffer.Length);
+
+                        if (ChunksTotal > 1)
                         {
-                            for (int i=0; i<MapChunkIdToChunkPos.Count; i++)
+                            buffer = new byte[Chunksize];
+                            for (int i=1; i<MapChunkIdToChunkPos.Count-1; i++)
                             {
-                                byte[] data = ReadChunk(i);
-                                fs.Write(data, 0, data.Length);
+                                ReadChunk(i, 0, buffer, 0, Chunksize);
+                                fs.Write(buffer, 0, buffer.Length);
                             }
+                            buffer = new byte[Options.LastChunksize];
+                            ReadChunk(ChunksTotal-1, 0, buffer, 0, Options.LastChunksize);
+                            fs.Write(buffer, 0, buffer.Length);
                         }
                     }
-
-                    fileStream.Close();
-                    Created = true;
-                    
-                    if (Options.DeletePartOnCreate)
-                        File.Delete(Path.Combine(Options.PartFolder, Filename + Options.PartExtension));
-                    
-                    FileCreated?.Invoke(this, EventArgs.Empty);
-
-                    if (Options.StayAlive)
-                        fileStream = File.Open(Path.Combine(Options.Folder, Filename), FileMode.Open, FileAccess.Read);
-                    else
-                        Dispose();
                 }
+
+                writeStream.Close();
+                readStream.Close();
+                writeStream = null;
+                readStream = null;
+
+                Created = true;
+                    
+                if (Options.DeletePartOnCreate)
+                    File.Delete(Path.Combine(Options.PartFolder, Filename + Options.PartExtension));
+                    
+                FileCreated?.Invoke(this, EventArgs.Empty);
+
+                if (Options.StayAlive)
+                {
+                    readStream = File.Open(Path.Combine(Options.Folder, Filename), FileMode.Open, FileAccess.Read);
+                    readStream.Position = Position;
+                }
+                else
+                    Dispose();
             }
         }
 
@@ -491,11 +406,14 @@ namespace SuRGeoNix.Partfiles
 
             base.Dispose(disposing);
 
-            if (fileStream != null)
+            if (writeStream != null)
             {
-                fileStream.Flush();
-                fileStream.Close();
+                writeStream.Flush();
+                writeStream.Close();
             }
+
+            if (readStream != null)
+                readStream.Close();
 
             if (Options.DeletePartOnDispose && File.Exists(Path.Combine(Options.PartFolder, Filename + Options.PartExtension)))
                 File.Delete(Path.Combine(Options.PartFolder, Filename + Options.PartExtension));
@@ -505,7 +423,8 @@ namespace SuRGeoNix.Partfiles
 
             MapChunkIdToChunkPos= null;
             Options             = null;
-            fileStream          = null;
+            writeStream         = null;
+            readStream          = null;
             Disposed            = true;
         }
 
@@ -566,38 +485,38 @@ namespace SuRGeoNix.Partfiles
         }
         private void WriteChunk(int chunkId, byte[] chunk, int offset, int len)
         {
-            fileStream.Write(BitConverter.GetBytes(chunkId), 0, sizeof(int));
-            fileStream.Write(chunk, offset, len);
-            fileStream.Flush();
+            writeStream.Write(BitConverter.GetBytes(chunkId), 0, sizeof(int));
+            writeStream.Write(chunk, offset, len);
+            writeStream.Flush();
             curChunkPos++;
             MapChunkIdToChunkPos.Add(chunkId, curChunkPos);
         }
         private void WriteHeaders()
         {
-            fileStream.Write(Encoding.UTF8.GetBytes("APF"),     0, 3);
-            fileStream.Write(BitConverter.GetBytes(Version.Major),          0, sizeof(int));
-            fileStream.Write(BitConverter.GetBytes(Version.Minor),          0, sizeof(int));
+            writeStream.Write(Encoding.UTF8.GetBytes("APF"),     0, 3);
+            writeStream.Write(BitConverter.GetBytes(Version.Major),          0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(Version.Minor),          0, sizeof(int));
 
-            fileStream.Write(BitConverter.GetBytes(Size),                   0, sizeof(long));
-            fileStream.Write(BitConverter.GetBytes(FirstChunkpos),          0, sizeof(int));
-            fileStream.Write(BitConverter.GetBytes(Options.FirstChunksize), 0, sizeof(int));
-            fileStream.Write(BitConverter.GetBytes(LastChunkpos),           0, sizeof(int));
-            fileStream.Write(BitConverter.GetBytes(Options.LastChunksize),  0, sizeof(int));
-            fileStream.Write(BitConverter.GetBytes(Chunksize),              0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(Size),                   0, sizeof(long));
+            writeStream.Write(BitConverter.GetBytes(FirstChunkpos),          0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(Options.FirstChunksize), 0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(LastChunkpos),           0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(Options.LastChunksize),  0, sizeof(int));
+            writeStream.Write(BitConverter.GetBytes(Chunksize),              0, sizeof(int));
 
             byte[] filename     = Encoding.UTF8.GetBytes(Filename);
             byte[] folder       = Encoding.UTF8.GetBytes(Options.Folder);
             byte[] partFolder   = Encoding.UTF8.GetBytes(Options.PartFolder);
-            fileStream.Write(BitConverter.GetBytes(filename.Length),        0, sizeof(int));
-            fileStream.Write(filename,                                      0, filename.Length);
-            fileStream.Write(BitConverter.GetBytes(folder.Length),          0, sizeof(int));
-            fileStream.Write(folder,                                        0, folder.Length);
-            fileStream.Write(BitConverter.GetBytes(partFolder.Length),      0, sizeof(int));
-            fileStream.Write(partFolder,                                    0, partFolder.Length);
+            writeStream.Write(BitConverter.GetBytes(filename.Length),        0, sizeof(int));
+            writeStream.Write(filename,                                      0, filename.Length);
+            writeStream.Write(BitConverter.GetBytes(folder.Length),          0, sizeof(int));
+            writeStream.Write(folder,                                        0, folder.Length);
+            writeStream.Write(BitConverter.GetBytes(partFolder.Length),      0, sizeof(int));
+            writeStream.Write(partFolder,                                    0, partFolder.Length);
 
-            fileStream.Flush();
+            writeStream.Flush();
 
-            headersSize = (int) fileStream.Position;
+            headersSize = (int) writeStream.Position;
         }
 
         #region Preparing Stream Support
@@ -616,34 +535,106 @@ namespace SuRGeoNix.Partfiles
 
             public BeforeReadingEventArgs(long position, int count) { Position = position; Count = count; }
         }
+        /// <summary>
+        /// Reads the specified byte's count to the output buffer from the current stream's position
+        /// </summary>
+        /// <param name="buffer"></param>
+        /// <param name="offset"></param>
+        /// <param name="count"></param>
+        /// <returns></returns>
         public override int Read(byte[] buffer, int offset, int count)
         {
-            if (Position + count > Size) count = (int) (Size - Position);
-            BeforeReading?.Invoke(this, new BeforeReadingEventArgs(Position, count));
+            lock (lockCreate)
+            {
+                if (Created) return readStream.Read(buffer, offset, count);
 
-            byte[] readData = Read(Position, count);
-            Buffer.BlockCopy(readData, 0, buffer, offset, readData.Length);
-            Position += readData.Length;
-            return readData.Length;
+                // We could possible allow reading by guessing or considering FirstChunkSize = 0 (if we dont care about exact position)
+                //if (Options.FirstChunksize == -1) { Warnings?.Invoke(this, new WarningEventArgs("Cannot read data until first chunk size will be known")); return null; }
+                if (Position + count > Size) count = (int) (Size - Position);
+                BeforeReading?.Invoke(this, new BeforeReadingEventArgs(Position, count));
+
+                if (Options.FirstChunksize == -1) ThrowException($"First chunk size is not known yet");
+
+                int readsize;
+                int readsizeTotal;
+                int startByte;
+                int sizeLeft = count;
+
+                int chunkId     = (int)((Position  - Options.FirstChunksize) / Chunksize) + 1;
+
+                if (Position < Options.FirstChunksize) //if (chunkId == 0)
+                {
+                    chunkId = 0;
+                    startByte   = (int) Position;
+                    readsize    = Math.Min(sizeLeft, Options.FirstChunksize - startByte);
+                }
+                else if (chunkId == ChunksTotal - 1)
+                {
+                    startByte   = (int) ((Position - Options.FirstChunksize) % Chunksize);
+                    readsize    = Math.Min(sizeLeft, Options.LastChunksize - startByte);
+                }
+                else
+                {
+                    startByte   = (int) ((Position - Options.FirstChunksize) % Chunksize);
+                    readsize    = Math.Min(sizeLeft, Chunksize - startByte);
+                }
+
+                int readtest = ReadChunk(chunkId, startByte, buffer, offset, readsize);
+                if (readtest != readsize)
+                    ThrowException($"readsize");
+                sizeLeft -= readsize;
+                readsizeTotal = readsize;
+
+                while (sizeLeft > 0)
+                {
+                    chunkId++;
+
+                    if (chunkId == ChunksTotal - 1)
+                        readsize = Math.Min(sizeLeft, Options.LastChunksize);
+                    else
+                        readsize = Math.Min(sizeLeft, Chunksize);
+
+                    readtest = ReadChunk(chunkId, 0, buffer, offset + readsizeTotal, readsize);
+                    if (readtest != readsize)
+                        ThrowException($"readsize");
+
+                    sizeLeft -= readsize;
+                    readsizeTotal += readsize;
+                }
+
+                Position += readsizeTotal;
+                return readsizeTotal;
+            }
         }
 
+        /// <summary>
+        /// Sets stream's position based on the specified offset and origin
+        /// </summary>
+        /// <param name="offset"></param>
+        /// <param name="origin"></param>
+        /// <returns></returns>
         public override long Seek(long offset, SeekOrigin origin)
         {
-            switch (origin) {
-                case SeekOrigin.Begin:
-                    Position = offset;
-                    break;
-                case SeekOrigin.Current:
-                    Position += offset;
-                    break;
-                case SeekOrigin.End:
-                    Position = Length - offset;
-                    break;
-                default:
-                    throw new NotSupportedException ();
-            }
+            lock (lockCreate)
+            {
+                if (Created) return readStream.Seek(offset, origin);
 
-            return Position;
+                switch (origin) {
+                    case SeekOrigin.Begin:
+                        Position = offset;
+                        break;
+                    case SeekOrigin.Current:
+                        Position += offset;
+                        break;
+                    case SeekOrigin.End:
+                        Position = Length - offset;
+                        break;
+                    default:
+                        throw new NotSupportedException ();
+                }
+
+                return Position;
+            }
         }
         public override void SetLength(long value) { throw new NotImplementedException(); }
         public override void Write(byte[] buffer, int offset, int count) { throw new NotImplementedException(); }
