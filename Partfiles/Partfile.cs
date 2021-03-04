@@ -1,5 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -8,9 +8,55 @@ using System.Text;
 namespace SuRGeoNix.Partfiles
 {
     /// <summary>
+    /// Thread-safe read-only stream to access partfile's data
+    /// </summary>
+    public class PartStream : Stream
+    {
+        private Partfile partFile;
+        public PartStream(Partfile partFile) { this.partFile = partFile; this.Length = partFile.Size; Position = 0; }
+
+        public override bool CanRead    => true;
+        public override bool CanSeek    => true;
+        public override bool CanWrite   => false;
+        public override long Length     { get; }
+        public override long Position   { get; set; }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            int ret = partFile.Read(Position, buffer, offset, count);
+            if (ret < 0) return ret;
+
+            Position += ret;
+            return ret;
+        }
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            switch (origin) {
+                case SeekOrigin.Begin:
+                    Position = offset;
+                    break;
+                case SeekOrigin.Current:
+                    Position += offset;
+                    break;
+                case SeekOrigin.End:
+                    Position = Length - offset;
+                    break;
+                default:
+                    throw new NotSupportedException ();
+            }
+
+            return Position;
+        }
+
+        public override void Flush() { throw new NotImplementedException(); }
+        public override void SetLength(long value) { throw new NotImplementedException(); }
+        public override void Write(byte[] buffer, int offset, int count) { throw new NotImplementedException(); }
+    }
+
+    /// <summary>
     /// Advanced Partfiles (thread-safe read/write)
     /// </summary>
-    public class Partfile : Stream
+    public class Partfile
     {
         FileStream      writeStream;
         FileStream      readStream;
@@ -33,7 +79,7 @@ namespace SuRGeoNix.Partfiles
         public int      FirstChunkpos   { get; private set; } = -1;
         public int      LastChunkpos    { get; private set; } = -1;
 
-        public Dictionary<int, int> MapChunkIdToChunkPos { get; private set; }
+        public ConcurrentDictionary<int, int> MapChunkIdToChunkPos { get; private set; }
 
         public event FileCreatingHandler FileCreating;
         public delegate void FileCreatingHandler(Partfile partfile, EventArgs e);
@@ -70,10 +116,18 @@ namespace SuRGeoNix.Partfiles
             Size        = size;
             Options     = options == null ? new Options() : (Options) options.Clone();
 
+            // Allow Empty Files
+            if (size == 0)
+            {
+                if (File.Exists(Path.Combine(Options.Folder, Filename)) && !Options.Overwrite) ThrowException($"Exists already in {Options.Folder}");
+                File.Create(Path.Combine(Options.Folder, Filename));
+
+                return;
+            }
+
             // Validation Sizes
             if (Chunksize < 1)                      ThrowException("Chunksize must be greater than zero");
             if (Size != -1 && Size < 1)             ThrowException("Size must be greater than zero");
-            //if (Size != -1 && Chunksize > Size)     ThrowException("Size must be greater than chunksize");
             if (Size == -1 && Options.AutoCreate)   ThrowException("AutoCreate must be set to false for initially unknown size part files");
 
             if (Options.FirstChunksize != -1 && Options.FirstChunksize > Chunksize)
@@ -108,7 +162,7 @@ namespace SuRGeoNix.Partfiles
                 CalculatePartsize();
             } catch (Exception e) { ThrowException(e.Message); }
 
-            MapChunkIdToChunkPos = new Dictionary<int, int>();
+            MapChunkIdToChunkPos = new ConcurrentDictionary<int, int>();
         }
 
         /// <summary>
@@ -210,7 +264,7 @@ namespace SuRGeoNix.Partfiles
             CalculatePartsize();
 
             // Load Map from file (TODO: check last block for possible corruption and delete it if thats the case)
-            MapChunkIdToChunkPos = new Dictionary<int, int>();
+            MapChunkIdToChunkPos = new ConcurrentDictionary<int, int>();
 
             int curChunkSize;
             readBuff = new byte[4];
@@ -230,7 +284,7 @@ namespace SuRGeoNix.Partfiles
 
                 readStream.Read(readBuff, 0, 4);
                 int chunkId = BitConverter.ToInt32(readBuff, 0);
-                MapChunkIdToChunkPos.Add(chunkId, curChunkPos);
+                MapChunkIdToChunkPos.TryAdd(chunkId, curChunkPos);
 
                 readStream.Position += curChunkSize;
             } while (true);
@@ -313,6 +367,72 @@ namespace SuRGeoNix.Partfiles
             if (Options.AutoCreate && writeStream.Length == Partsize) Create();
         }
 
+        /// <summary>
+        /// Reads the specified actual bytes from the part file
+        /// </summary>
+        /// <param name="pos"></param>
+        /// <param name="buffer"></param>
+        /// <param name="offset"></param>
+        /// <param name="count"></param>
+        /// <returns></returns>
+        public int Read(long pos, byte[] buffer, int offset, int count)
+        {
+            lock (lockCreate)
+            {
+                if (Created)
+                {
+                    readStream.Position = pos;
+                    return readStream.Read(buffer, offset, count);
+                }
+
+                // We could possible allow reading by guessing or considering FirstChunkSize = 0 (if we dont care about exact pos)
+                //if (Options.FirstChunksize == -1) { Warnings?.Invoke(this, new WarningEventArgs("Cannot read data until first chunk size will be known")); return null; }
+                if (pos + count > Size) count = (int) (Size - pos);
+                //BeforeReading?.Invoke(this, new BeforeReadingEventArgs(pos, count));
+
+                if (Options.FirstChunksize == -1) ThrowException($"First chunk size is not known yet");
+
+                int readsize;
+                int readsizeTotal;
+                int startByte;
+
+                int sizeLeft    = count;
+                int chunkId     = (int)((pos  - Options.FirstChunksize) / Chunksize) + 1;
+
+                if (pos < Options.FirstChunksize) //if (chunkId == 0)
+                {
+                    chunkId = 0;
+                    startByte   = (int) pos;
+                    readsize    = Math.Min(sizeLeft, Options.FirstChunksize - startByte);
+                }
+                else if (chunkId == ChunksTotal - 1)
+                {
+                    startByte   = (int) ((pos - Options.FirstChunksize) % Chunksize);
+                    readsize    = Math.Min(sizeLeft, Options.LastChunksize - startByte);
+                }
+                else
+                {
+                    startByte   = (int) ((pos - Options.FirstChunksize) % Chunksize);
+                    readsize    = Math.Min(sizeLeft, Chunksize - startByte);
+                }
+
+                readsize        = ReadChunk(chunkId, startByte, buffer, offset, readsize);
+                sizeLeft       -= readsize;
+                readsizeTotal   = readsize;
+
+                while (sizeLeft > 0)
+                {
+                    chunkId++;
+                    readsize        = chunkId == ChunksTotal - 1 ? readsize = Math.Min(sizeLeft, Options.LastChunksize) : Math.Min(sizeLeft, Chunksize);
+                    readsize        = ReadChunk(chunkId, 0, buffer, offset + readsizeTotal, readsize);
+                    sizeLeft       -= readsize;
+                    readsizeTotal  += readsize;
+                }
+
+                pos += readsizeTotal;
+                return readsizeTotal;
+            }
+        }
 
         /// <summary>
         /// Reads the specified chunkId bytes from the part file
@@ -340,6 +460,12 @@ namespace SuRGeoNix.Partfiles
             readStream.Seek(filePos + startByte, SeekOrigin.Begin);
             return readStream.Read(buffer, offset, count);
         }
+
+        /// <summary>
+        /// Creates a new stream for read-only access of part data
+        /// </summary>
+        /// <returns></returns>
+        public PartStream GetReadStream() { return new PartStream(this); }
 
         /// <summary>
         /// Manually forces to create the completed file.
@@ -388,10 +514,7 @@ namespace SuRGeoNix.Partfiles
                 FileCreated?.Invoke(this, EventArgs.Empty);
 
                 if (Options.StayAlive)
-                {
-                    readStream = File.Open(Path.Combine(Options.Folder, Filename), FileMode.Open, FileAccess.Read);
-                    readStream.Position = Position;
-                }
+                    readStream = File.Open(Path.Combine(Options.Folder, Filename), FileMode.Open, FileAccess.Read, FileShare.Read);
                 else
                     Dispose();
             }
@@ -400,11 +523,9 @@ namespace SuRGeoNix.Partfiles
         /// <summary>
         /// Closes the file input and deletes part and/or completed files if specified by the options
         /// </summary>
-        protected override void Dispose(bool disposing = true)
+        public void Dispose()
         {
             if (Disposed) return;
-
-            base.Dispose(disposing);
 
             if (writeStream != null)
             {
@@ -489,7 +610,7 @@ namespace SuRGeoNix.Partfiles
             writeStream.Write(chunk, offset, len);
             writeStream.Flush();
             curChunkPos++;
-            MapChunkIdToChunkPos.Add(chunkId, curChunkPos);
+            MapChunkIdToChunkPos.TryAdd(chunkId, curChunkPos);
         }
         private void WriteHeaders()
         {
@@ -518,128 +639,6 @@ namespace SuRGeoNix.Partfiles
 
             headersSize = (int) writeStream.Position;
         }
-
-        #region Preparing Stream Support
-        public override bool CanRead    => true;
-        public override bool CanSeek    => true;
-        public override bool CanWrite   => false;
-        public override long Length     => Size;
-        public override long Position   { get; set; }
-
-        public event BeforeReadingHandler BeforeReading;
-        public delegate void BeforeReadingHandler(Partfile partfile, BeforeReadingEventArgs e);
-        public class BeforeReadingEventArgs
-        {
-            public long Position        { get; set; }
-            public int  Count           { get; set; }
-
-            public BeforeReadingEventArgs(long position, int count) { Position = position; Count = count; }
-        }
-        /// <summary>
-        /// Reads the specified byte's count to the output buffer from the current stream's position
-        /// </summary>
-        /// <param name="buffer"></param>
-        /// <param name="offset"></param>
-        /// <param name="count"></param>
-        /// <returns></returns>
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            lock (lockCreate)
-            {
-                if (Created) return readStream.Read(buffer, offset, count);
-
-                // We could possible allow reading by guessing or considering FirstChunkSize = 0 (if we dont care about exact position)
-                //if (Options.FirstChunksize == -1) { Warnings?.Invoke(this, new WarningEventArgs("Cannot read data until first chunk size will be known")); return null; }
-                if (Position + count > Size) count = (int) (Size - Position);
-                BeforeReading?.Invoke(this, new BeforeReadingEventArgs(Position, count));
-
-                if (Options.FirstChunksize == -1) ThrowException($"First chunk size is not known yet");
-
-                int readsize;
-                int readsizeTotal;
-                int startByte;
-                int sizeLeft = count;
-
-                int chunkId     = (int)((Position  - Options.FirstChunksize) / Chunksize) + 1;
-
-                if (Position < Options.FirstChunksize) //if (chunkId == 0)
-                {
-                    chunkId = 0;
-                    startByte   = (int) Position;
-                    readsize    = Math.Min(sizeLeft, Options.FirstChunksize - startByte);
-                }
-                else if (chunkId == ChunksTotal - 1)
-                {
-                    startByte   = (int) ((Position - Options.FirstChunksize) % Chunksize);
-                    readsize    = Math.Min(sizeLeft, Options.LastChunksize - startByte);
-                }
-                else
-                {
-                    startByte   = (int) ((Position - Options.FirstChunksize) % Chunksize);
-                    readsize    = Math.Min(sizeLeft, Chunksize - startByte);
-                }
-
-                int readtest = ReadChunk(chunkId, startByte, buffer, offset, readsize);
-                if (readtest != readsize)
-                    ThrowException($"readsize");
-                sizeLeft -= readsize;
-                readsizeTotal = readsize;
-
-                while (sizeLeft > 0)
-                {
-                    chunkId++;
-
-                    if (chunkId == ChunksTotal - 1)
-                        readsize = Math.Min(sizeLeft, Options.LastChunksize);
-                    else
-                        readsize = Math.Min(sizeLeft, Chunksize);
-
-                    readtest = ReadChunk(chunkId, 0, buffer, offset + readsizeTotal, readsize);
-                    if (readtest != readsize)
-                        ThrowException($"readsize");
-
-                    sizeLeft -= readsize;
-                    readsizeTotal += readsize;
-                }
-
-                Position += readsizeTotal;
-                return readsizeTotal;
-            }
-        }
-
-        /// <summary>
-        /// Sets stream's position based on the specified offset and origin
-        /// </summary>
-        /// <param name="offset"></param>
-        /// <param name="origin"></param>
-        /// <returns></returns>
-        public override long Seek(long offset, SeekOrigin origin)
-        {
-            lock (lockCreate)
-            {
-                if (Created) return readStream.Seek(offset, origin);
-
-                switch (origin) {
-                    case SeekOrigin.Begin:
-                        Position = offset;
-                        break;
-                    case SeekOrigin.Current:
-                        Position += offset;
-                        break;
-                    case SeekOrigin.End:
-                        Position = Length - offset;
-                        break;
-                    default:
-                        throw new NotSupportedException ();
-                }
-
-                return Position;
-            }
-        }
-        public override void SetLength(long value) { throw new NotImplementedException(); }
-        public override void Write(byte[] buffer, int offset, int count) { throw new NotImplementedException(); }
-        public override void Flush() { throw new NotImplementedException(); }
-        #endregion
     }
 }
 #pragma warning restore CS1591 // Missing XML comment for publicly visible type or member

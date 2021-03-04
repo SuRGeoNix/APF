@@ -15,11 +15,10 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>apf advanced partfile partfiles part file incomplete preview streaming</PackageTags>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>1.2</Version>
+    <Version>1.3</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <PackageReleaseNotes>- Seperating Read/Write Streams
-- Using more efficient Read algorithm</PackageReleaseNotes>
-    <AssemblyVersion>1.2.0.0</AssemblyVersion>
-    <FileVersion>1.2.0.0</FileVersion>
+    <PackageReleaseNotes>- Finalizing multi-instance (PartStream) support for reading (thread-safe)</PackageReleaseNotes>
+    <AssemblyVersion>1.3.0.0</AssemblyVersion>
+    <FileVersion>1.3.0.0</FileVersion>
   </PropertyGroup>
 </Project>
