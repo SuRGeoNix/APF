@@ -21,6 +21,17 @@ namespace SuRGeoNix.Partfiles
         public override long Length     { get; }
         public override long Position   { get; set; }
 
+#if NET5_0_OR_GREATER
+        public override int Read(Span<byte> buffer)
+        {
+            int ret = partFile.Read(Position, buffer);
+            if (ret < 0) return ret;
+
+            Position += ret;
+            return ret;
+        }
+#endif
+
         public override int Read(byte[] buffer, int offset, int count)
         {
             int ret = partFile.Read(Position, buffer, offset, count);
@@ -434,6 +445,69 @@ namespace SuRGeoNix.Partfiles
             }
         }
 
+#if NET5_0_OR_GREATER
+        public int Read(long pos, Span<byte> buffer)
+        {
+            lock (lockCreate)
+            {
+                if (Created)
+                {
+                    readStream.Position = pos;
+                    return readStream.Read(buffer);
+                }
+
+                int count = buffer.Length;
+
+                // We could possible allow reading by guessing or considering FirstChunkSize = 0 (if we dont care about exact pos)
+                //if (Options.FirstChunksize == -1) { Warnings?.Invoke(this, new WarningEventArgs("Cannot read data until first chunk size will be known")); return null; }
+                if (pos + count > Size) count = (int) (Size - pos);
+                //BeforeReading?.Invoke(this, new BeforeReadingEventArgs(pos, count));
+
+                if (Options.FirstChunksize == -1) ThrowException($"First chunk size is not known yet");
+
+                int readsize;
+                int readsizeTotal;
+                int startByte;
+
+                int sizeLeft    = count;
+                int chunkId     = (int)((pos  - Options.FirstChunksize) / Chunksize) + 1;
+
+                if (pos < Options.FirstChunksize) //if (chunkId == 0)
+                {
+                    chunkId = 0;
+                    startByte   = (int) pos;
+                    readsize    = Math.Min(sizeLeft, Options.FirstChunksize - startByte);
+                }
+                else if (chunkId == ChunksTotal - 1)
+                {
+                    startByte   = (int) ((pos - Options.FirstChunksize) % Chunksize);
+                    readsize    = Math.Min(sizeLeft, Options.LastChunksize - startByte);
+                }
+                else
+                {
+                    startByte   = (int) ((pos - Options.FirstChunksize) % Chunksize);
+                    readsize    = Math.Min(sizeLeft, Chunksize - startByte);
+                }
+
+                readsize        = ReadChunk(chunkId, startByte, buffer.Slice(0, readsize));
+                sizeLeft       -= readsize;
+                readsizeTotal   = readsize;
+
+                while (sizeLeft > 0)
+                {
+                    chunkId++;
+                    readsize        = chunkId == ChunksTotal - 1 ? readsize = Math.Min(sizeLeft, Options.LastChunksize) : Math.Min(sizeLeft, Chunksize);
+                    readsize        = ReadChunk(chunkId, 0, buffer.Slice(readsizeTotal, readsize));
+                    sizeLeft       -= readsize;
+                    readsizeTotal  += readsize;
+                }
+
+                pos += readsizeTotal;
+                return readsizeTotal;
+            }
+        }
+#endif
+
         /// <summary>
         /// Reads the specified chunkId bytes from the part file
         /// </summary>
@@ -460,6 +534,26 @@ namespace SuRGeoNix.Partfiles
             readStream.Seek(filePos + startByte, SeekOrigin.Begin);
             return readStream.Read(buffer, offset, count);
         }
+
+#if NET5_0_OR_GREATER
+        public int ReadChunk(int chunkId, int startByte, Span<byte> buffer)
+        {
+            if (!MapChunkIdToChunkPos.ContainsKey(chunkId)) ThrowException($"Chunk id {chunkId} not available yet");
+
+            int chunkPos   = MapChunkIdToChunkPos[chunkId];
+            int chunksLeft = chunkPos;
+
+            // Find chunk's position in file
+            long filePos = headersSize + 4;
+            if (FirstChunkpos != -1 && chunkPos > FirstChunkpos) { filePos += 4 + Options.FirstChunksize; chunksLeft--; }
+            if (LastChunkpos  != -1 && chunkPos > LastChunkpos ) { filePos += 4 + Options.LastChunksize;  chunksLeft--; }
+            filePos += (long)chunksLeft * (Chunksize + 4);
+
+            // Read at filePos len of chunksize
+            readStream.Seek(filePos + startByte, SeekOrigin.Begin);
+            return readStream.Read(buffer);
+        }
+#endif
 
         /// <summary>
         /// Creates a new stream for read-only access of part data
