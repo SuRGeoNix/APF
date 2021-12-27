@@ -56,7 +56,15 @@ namespace SuRGeoNix.Partfiles
         /// The size of last chunk if it is known
         /// </summary>
         public int      LastChunksize       { get; set; } = -1;
+        /// <summary>
+        /// Whether to flush on every chunk write
+        /// </summary>
+        public bool     FlushOnEveryChunk   { get; set; } = false;
 
+        /// <summary>
+        /// Clones this options to a new instance
+        /// </summary>
+        /// <returns></returns>
         public object Clone() { return (Options) MemberwiseClone(); }
     }
 }
