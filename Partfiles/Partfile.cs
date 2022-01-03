@@ -616,7 +616,7 @@ namespace SuRGeoNix.Partfiles
                 FileCreated?.Invoke(this, EventArgs.Empty);
 
                 if (Options.StayAlive)
-                    fileStream = File.Open(Path.Combine(Options.Folder, Filename), FileMode.Open, FileAccess.Read);
+                    fileStream = File.Open(Path.Combine(Options.Folder, Filename), FileMode.Open, FileAccess.Read, FileShare.Read);
                 else
                     Dispose();
             }

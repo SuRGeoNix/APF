@@ -15,11 +15,10 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>apf advanced partfile partfiles part file incomplete preview streaming</PackageTags>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <Version>1.3.2</Version>
+    <Version>1.3.3</Version>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageReleaseNotes>
-		Adds .NET 5 support
-		Adds Read with Span byte support
+		Allows (FileShare.Read) after creations on StayAlive streams
 	</PackageReleaseNotes>
     <AssemblyVersion>1.3.0.0</AssemblyVersion>
     <FileVersion>1.3.0.0</FileVersion>
